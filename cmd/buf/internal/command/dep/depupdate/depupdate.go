@@ -29,11 +29,9 @@ import (
 	"github.com/bufbuild/buf/cmd/buf/internal/command/dep/internal"
 	"github.com/bufbuild/buf/private/buf/bufcli"
 	"github.com/bufbuild/buf/private/buf/bufctl"
+	"github.com/bufbuild/buf/private/bufpkg/bufconfig"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule"
 	"github.com/bufbuild/buf/private/bufpkg/bufparse"
-	"github.com/bufbuild/buf/private/bufpkg/bufplugin"
-	"github.com/bufbuild/buf/private/bufpkg/bufpolicy"
-	"github.com/bufbuild/buf/private/pkg/storage/storagemem"
 	"github.com/bufbuild/buf/private/pkg/syserror"
 	"github.com/spf13/pflag"
 )
@@ -199,35 +197,6 @@ func run(
 	}
 	// Log warnings for users on unused configured deps.
 	return internal.LogUnusedConfiguredDepsForWorkspace(workspace, logger)
-}
-
-// newBufLockFile creates a BufLockFile for the given digest type and keys.
-func newBufLockFile(
-	digestType bufmodule.DigestType,
-	depModuleKeys []bufmodule.ModuleKey,
-	remotePluginKeys []bufplugin.PluginKey,
-	remotePolicyKeys []bufpolicy.PolicyKey,
-	policyNameToRemotePluginKeys map[string][]bufplugin.PluginKey,
-) (bufconfig.BufLockFile, error) {
-	switch digestType {
-	case bufmodule.DigestTypeB5:
-		return bufconfig.NewBufLockFile(
-			bufconfig.FileVersionV2,
-			depModuleKeys,
-			remotePluginKeys,
-			remotePolicyKeys,
-			policyNameToRemotePluginKeys,
-		)
-	default:
-		// For v1beta1/v1 workspaces, plugins and policies are not supported.
-		return bufconfig.NewBufLockFile(
-			bufconfig.FileVersionV1,
-			depModuleKeys,
-			nil,
-			nil,
-			nil,
-		)
-	}
 }
 
 // applyGitBranchLabelOverrides reads the buf.yaml from dirPath and overrides the
