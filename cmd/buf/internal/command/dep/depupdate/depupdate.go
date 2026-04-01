@@ -17,6 +17,7 @@ package depupdate
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,7 +29,6 @@ import (
 	"github.com/bufbuild/buf/cmd/buf/internal/command/dep/internal"
 	"github.com/bufbuild/buf/private/buf/bufcli"
 	"github.com/bufbuild/buf/private/buf/bufctl"
-	"github.com/bufbuild/buf/private/bufpkg/bufconfig"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule"
 	"github.com/bufbuild/buf/private/bufpkg/bufparse"
 	"github.com/bufbuild/buf/private/bufpkg/bufplugin"
@@ -94,7 +94,7 @@ func run(
 	ctx context.Context,
 	container appext.Container,
 	flags *flags,
-) error {
+) (retErr error) {
 	dirPath := "."
 	if container.NumArgs() > 0 {
 		dirPath = container.Arg(0)
@@ -141,6 +141,7 @@ func run(
 		slog.Any("deps", xslices.Map(configuredDepModuleKeys, bufmodule.ModuleKey.String)),
 	)
 
+	// Store the existing buf.lock data.
 	existingDepModuleKeys, err := workspaceDepManager.ExistingBufLockFileDepModuleKeys(ctx)
 	if err != nil {
 		return err
@@ -167,29 +168,22 @@ func run(
 		return err
 	}
 
-	// Write the updated buf.lock to an in-memory bucket and overlay it on top of
-	// the workspace bucket for validation. Only persist to disk after the workspace
-	// builds successfully.
-	overlayBucket := storagemem.NewReadWriteBucket()
-	bufLockFile, err := newBufLockFile(
-		workspaceDepManager.BufLockFileDigestType(),
-		configuredDepModuleKeys,
-		existingRemotePluginKeys,
-		existingRemotePolicyKeys,
-		existingPolicyNameToRemotePluginKeys,
-	)
-	if err != nil {
+	// We're about to edit the buf.lock file on disk. If we have a subsequent error,
+	// attempt to revert the buf.lock file.
+	//
+	// TODO FUTURE: We should be able to update the buf.lock file in an in-memory bucket, then do the rebuild,
+	// and if the rebuild is successful, then actually write to disk. It shouldn't even be that much work - just
+	// overlay the new buf.lock file in a union bucket.
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, workspaceDepManager.UpdateBufLockFile(ctx, existingDepModuleKeys, existingRemotePluginKeys, existingRemotePolicyKeys, existingPolicyNameToRemotePluginKeys))
+		}
+	}()
+	// Edit the buf.lock file with the unpruned dependencies.
+	if err := workspaceDepManager.UpdateBufLockFile(ctx, configuredDepModuleKeys, existingRemotePluginKeys, existingRemotePolicyKeys, existingPolicyNameToRemotePluginKeys); err != nil {
 		return err
 	}
-	if err := bufconfig.PutBufLockFileForPrefix(ctx, overlayBucket, ".", bufLockFile); err != nil {
-		return err
-	}
-	workspace, err := controller.GetWorkspace(
-		ctx,
-		dirPath,
-		bufctl.WithIgnoreAndDisallowV1BufWorkYAMLs(),
-		bufctl.WithBucketOverlay(overlayBucket),
-	)
+	workspace, err := controller.GetWorkspace(ctx, dirPath, bufctl.WithIgnoreAndDisallowV1BufWorkYAMLs())
 	if err != nil {
 		return err
 	}
@@ -200,16 +194,6 @@ func run(
 		workspace,
 		// This is a performance optimization - we don't need source code info.
 		bufctl.WithImageExcludeSourceInfo(true),
-	); err != nil {
-		return err
-	}
-	// Build succeeded, persist the buf.lock to disk.
-	if err := workspaceDepManager.UpdateBufLockFile(
-		ctx,
-		configuredDepModuleKeys,
-		existingRemotePluginKeys,
-		existingRemotePolicyKeys,
-		existingPolicyNameToRemotePluginKeys,
 	); err != nil {
 		return err
 	}
